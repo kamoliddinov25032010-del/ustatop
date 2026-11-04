@@ -6,7 +6,7 @@ const crypto = require('crypto');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-const ADMIN_ID = 99999999;
+const ADMIN_ID = 7695822564;
 
 // ==========================================
 // YORDAMCHI FUNKSIYALAR
