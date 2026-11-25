@@ -61,17 +61,76 @@ bot.start(async (ctx) => {
         return ctx.reply("❌ Kod noto'g'ri yoki eskirgan.\n\nSaytdan yangi kod oling.");
       }
 
-      // 2. Userni topamiz
-      const { data: user } = await supabase
-        .from('users')
-        .select('*')
-        .eq('phone', req.phone)
-        .maybeSingle();
+      // 2. Userni topamiz yoki YANGI yaratamiz
+const cleanPhone = req.phone.replace(/\D/g, ''); // Faqat raqamlar
+const last9 = cleanPhone.slice(-9); // Oxirgi 9 ta raqam
 
-      if (!user) {
-        return ctx.reply("❌ Bu telefon raqam topilmadi. Iltimos, bot orqali ro'yxatdan o'ting.");
-      }
+let { data: user } = await supabase
+  .from('users')
+  .select('*')
+  .ilike('phone', `%${last9}%`)
+  .maybeSingle();
 
+// ═══ AGAR USER BO'LMASA — AVTOMATIK YARATAMIZ ═══
+if (!user) {
+  const newPin = Math.floor(100000 + Math.random() * 900000).toString();
+  const newToken = crypto.randomBytes(32).toString('hex');
+  
+  const { data: newUser, error: createError } = await supabase
+    .from('users')
+    .insert([{
+      telegram_id: ctx.from.id,
+      name: ctx.from.first_name || 'Foydalanuvchi',
+      phone: cleanPhone,
+      role: 'customer',           // Standart rol
+      auth_pin: newPin,
+      auth_token: newToken,
+      is_verified: true,
+      verification_status: 'approved'
+    }])
+    .select()
+    .single();
+
+  if (createError) {
+    console.error('User creation error:', createError);
+    return ctx.reply('⚠️ Foydalanuvchi yaratishda xatolik. Qayta urinib ko\'ring.');
+  }
+
+  user = newUser;
+  
+  await ctx.reply(
+    `✅ <b>Yangi akkaunt yaratildi!</b>\n\n` +
+    `Ism: ${user.name}\n` +
+    `Telefon: ${user.phone}\n` +
+    `🔐 Parolingiz: <code>${newPin}</code>\n\n` +
+    `Saytga qaytib kirasiz. 🚀`,
+    { parse_mode: 'HTML' }
+  );
+}
+
+// 3. Yangi, o'ta xavfsiz token yaratamiz (32 bayt)
+const newToken = crypto.randomBytes(32).toString('hex');
+
+// 4. Userni yangilaymiz (Telegram ID va yangi Token)
+await supabase.from('users').update({ 
+  auth_token: newToken,
+  telegram_id: ctx.from.id,
+  is_verified: true
+}).eq('id', user.id);
+
+// 5. Saytga tokenni yuboramiz (status: approved)
+await supabase.from('auth_requests').update({ 
+  status: 'approved',
+  auth_token: newToken
+}).eq('id', req.id);
+
+// Agar yangi user yaratilmagan bo'lsa, oddiy xabar
+if (user.auth_pin && user.created_at !== user.updated_at) {
+  return ctx.reply(
+    `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
+    { parse_mode: 'HTML' }
+  );
+}
       // 3. Yangi, o'ta xavfsiz token yaratamiz (32 bayt)
       const newToken = crypto.randomBytes(32).toString('hex');
 
