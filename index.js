@@ -41,17 +41,76 @@ const getRoleName = (role) => {
 };
 
 // ==========================================
-// 1. /start
+// 1. /start (Saytdan kelgan kodni tekshirish bilan)
 // ==========================================
 bot.start(async (ctx) => {
+  const payload = ctx.startPayload; // t.me/bot?start=123456 dan kelgan kod
+
+  // ═══ ALOHIDA: Agar saytdan kod kelgan bo'lsa ═══
+  if (payload) {
+    try {
+      // 1. Kodni bazadan tekshiramiz
+      const { data: authData, error } = await supabase
+        .from('auth_codes')
+        .select('*')
+        .eq('code', payload)
+        .eq('is_used', false)
+        .maybeSingle();
+
+      if (error || !authData) {
+        return ctx.reply("❌ Kod noto'g'ri yoki eskirgan.\n\nIltimos, saytdan yangi kod oling.");
+      }
+
+      // 2. Kodni "ishlatilgan" deb belgilaymiz
+      await supabase.from('auth_codes').update({ is_used: true }).eq('id', authData.id);
+
+      // 3. Userni telefon raqami orqali topamiz
+      const { data: user } = await supabase
+        .from('users')
+        .select('*')
+        .eq('phone', authData.phone)
+        .maybeSingle();
+
+      if (user) {
+        // 4. Telegram ID ni userga bog'laymiz (agar hali bog'lanmagan bo'lsa)
+        if (!user.telegram_id || user.telegram_id !== ctx.from.id) {
+          await supabase.from('users').update({ telegram_id: ctx.from.id }).eq('id', user.id);
+        }
+        
+        return ctx.reply(
+          `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\n` +
+          `Xush kelibsiz, ${user.name}! 👋\n` +
+          `Saytga qaytib, avtomatik kirasiz. 🚀`,
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        // Agar user bazada bo'lmasa (yangi user)
+        return ctx.reply(
+          `✅ <b>Kod tasdiqlandi!</b>\n\n` +
+          `Saytga qaytib, ro'yxatdan o'tishni yakunlang.`,
+          { parse_mode: 'HTML' }
+        );
+      }
+    } catch (err) {
+      console.error(err);
+      return ctx.reply("⚠️ Server xatosi. Keyinroq urinib ko'ring.");
+    }
+  }
+
+  // ═══ ODDIY /start (Kod yo'q bo'lsa) ═══
   const user = await getUser(ctx.from.id);
   if (user && user.phone) {
-    return ctx.reply(`Assalomu alaykum, ${user.name}! 👋\nRolingiz: ${getRoleName(user.role)}`, getMainMenu(ctx.from.id, user.role));
+    return ctx.reply(
+      `Assalomu alaykum, ${user.name}! 👋\nRolingiz: ${getRoleName(user.role)}`, 
+      getMainMenu(ctx.from.id, user.role)
+    );
   }
-  ctx.reply(`Assalomu alaykum! Tizimga kirish uchun telefon raqamingizni yuboring:`, 
-    Markup.keyboard([[Markup.button.contactRequest('📱 Telefon raqamni yuborish')]]).resize());
+  
+  ctx.reply(
+    `Assalomu alaykum! Tizimga kirish uchun telefon raqamingizni yuboring:`, 
+    Markup.keyboard([[Markup.button.contactRequest('📱 Telefon raqamni yuborish')]]).resize()
+  );
 });
-
 // ==========================================
 // 2. Telefon raqam
 // ==========================================
