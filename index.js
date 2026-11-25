@@ -62,81 +62,60 @@ bot.start(async (ctx) => {
       }
 
       // 2. Userni topamiz yoki YANGI yaratamiz
-const cleanPhone = req.phone.replace(/\D/g, ''); // Faqat raqamlar
-const last9 = cleanPhone.slice(-9); // Oxirgi 9 ta raqam
+      const cleanPhone = req.phone.replace(/\D/g, ''); // Faqat raqamlar
+      const last9 = cleanPhone.slice(-9); // Oxirgi 9 ta raqam
 
-let { data: user } = await supabase
-  .from('users')
-  .select('*')
-  .ilike('phone', `%${last9}%`)
-  .maybeSingle();
+      let { data: user } = await supabase
+        .from('users')
+        .select('*')
+        .ilike('phone', `%${last9}%`)
+        .maybeSingle();
 
-// ═══ AGAR USER BO'LMASA — AVTOMATIK YARATAMIZ ═══
-if (!user) {
-  const newPin = Math.floor(100000 + Math.random() * 900000).toString();
-  const newToken = crypto.randomBytes(32).toString('hex');
-  
-  const { data: newUser, error: createError } = await supabase
-    .from('users')
-    .insert([{
-      telegram_id: ctx.from.id,
-      name: ctx.from.first_name || 'Foydalanuvchi',
-      phone: cleanPhone,
-      role: 'customer',           // Standart rol
-      auth_pin: newPin,
-      auth_token: newToken,
-      is_verified: true,
-      verification_status: 'approved'
-    }])
-    .select()
-    .single();
+      // ═══ AGAR USER BO'LMASA — AVTOMATIK YARATAMIZ ═══
+      let isNewUser = false;
+      if (!user) {
+        const newPin = Math.floor(100000 + Math.random() * 900000).toString();
+        const createToken = crypto.randomBytes(32).toString('hex'); // ✅ Nom o'zgartirildi
+        
+        const { data: newUser, error: createError } = await supabase
+          .from('users')
+          .insert([{
+            telegram_id: ctx.from.id,
+            name: ctx.from.first_name || 'Foydalanuvchi',
+            phone: cleanPhone,
+            role: 'customer',
+            auth_pin: newPin,
+            auth_token: createToken,
+            is_verified: true,
+            verification_status: 'approved'
+          }])
+          .select()
+          .single();
 
-  if (createError) {
-    console.error('User creation error:', createError);
-    return ctx.reply('⚠️ Foydalanuvchi yaratishda xatolik. Qayta urinib ko\'ring.');
-  }
+        if (createError) {
+          console.error('User creation error:', createError);
+          return ctx.reply('⚠️ Foydalanuvchi yaratishda xatolik. Qayta urinib ko\'ring.');
+        }
 
-  user = newUser;
-  
-  await ctx.reply(
-    `✅ <b>Yangi akkaunt yaratildi!</b>\n\n` +
-    `Ism: ${user.name}\n` +
-    `Telefon: ${user.phone}\n` +
-    `🔐 Parolingiz: <code>${newPin}</code>\n\n` +
-    `Saytga qaytib kirasiz. 🚀`,
-    { parse_mode: 'HTML' }
-  );
-}
+        user = newUser;
+        isNewUser = true;
 
-// 3. Yangi, o'ta xavfsiz token yaratamiz (32 bayt)
-const newToken = crypto.randomBytes(32).toString('hex');
+        await ctx.reply(
+          `✅ <b>Yangi akkaunt yaratildi!</b>\n\n` +
+          `Ism: ${user.name}\n` +
+          `Telefon: ${user.phone}\n` +
+          `🔐 Parolingiz: <code>${newPin}</code>\n\n` +
+          `Saytga qaytib kirasiz. 🚀`,
+          { parse_mode: 'HTML' }
+        );
+      }
 
-// 4. Userni yangilaymiz (Telegram ID va yangi Token)
-await supabase.from('users').update({ 
-  auth_token: newToken,
-  telegram_id: ctx.from.id,
-  is_verified: true
-}).eq('id', user.id);
-
-// 5. Saytga tokenni yuboramiz (status: approved)
-await supabase.from('auth_requests').update({ 
-  status: 'approved',
-  auth_token: newToken
-}).eq('id', req.id);
-
-// Agar yangi user yaratilmagan bo'lsa, oddiy xabar
-if (user.auth_pin && user.created_at !== user.updated_at) {
-  return ctx.reply(
-    `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
-    { parse_mode: 'HTML' }
-  );
-}
       // 3. Yangi, o'ta xavfsiz token yaratamiz (32 bayt)
-      const newToken = crypto.randomBytes(32).toString('hex');
+      const finalToken = crypto.randomBytes(32).toString('hex'); // ✅ Boshqa nom
 
       // 4. Userni yangilaymiz (Telegram ID va yangi Token)
       await supabase.from('users').update({ 
-        auth_token: newToken,
+        auth_token: finalToken,
         telegram_id: ctx.from.id,
         is_verified: true
       }).eq('id', user.id);
@@ -144,26 +123,29 @@ if (user.auth_pin && user.created_at !== user.updated_at) {
       // 5. Saytga tokenni yuboramiz (status: approved)
       await supabase.from('auth_requests').update({ 
         status: 'approved',
-        auth_token: newToken
+        auth_token: finalToken
       }).eq('id', req.id);
 
-      return ctx.reply(
-        `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
-        { parse_mode: 'HTML' }
-      );
+      // Agar mavjud user bo'lsa, oddiy xabar
+      if (!isNewUser) {
+        return ctx.reply(
+          `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
+          { parse_mode: 'HTML' }
+        );
+      }
 
     } catch (err) {
       console.error(err);
       return ctx.reply("⚠️ Server xatosi. Keyinroq urinib ko'ring.");
     }
-  } // ✅ IF (PAYLOAD) BLOKI SHU YERDA YOPILDI
+  }
 
   // ═══ ODDIY /start (Kod yo'q bo'lsa) ═══
-  const user = await getUser(ctx.from.id);
-  if (user && user.phone) {
+  const existingUser = await getUser(ctx.from.id);
+  if (existingUser && existingUser.phone) {
     return ctx.reply(
-      `Assalomu alaykum, ${user.name}! 👋\nRolingiz: ${getRoleName(user.role)}`, 
-      getMainMenu(ctx.from.id, user.role)
+      `Assalomu alaykum, ${existingUser.name}! 👋\nRolingiz: ${getRoleName(existingUser.role)}`, 
+      getMainMenu(ctx.from.id, existingUser.role)
     );
   }
   
@@ -171,7 +153,7 @@ if (user.auth_pin && user.created_at !== user.updated_at) {
     `Assalomu alaykum! Tizimga kirish uchun telefon raqamingizni yuboring:`, 
     Markup.keyboard([[Markup.button.contactRequest('📱 Telefon raqamni yuborish')]]).resize()
   );
-}); // ✅ BOT.START BLOKI SHU YERDA YOPILDI
+});
 
 // ==========================================
 // 2. Telefon raqam
