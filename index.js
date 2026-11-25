@@ -48,56 +48,72 @@ bot.start(async (ctx) => {
 
   // ═══ ALOHIDA: Agar saytdan kod kelgan bo'lsa ═══
   if (payload) {
-  try {
-    // 1. So'rovni tekshiramiz
-    const { data: req, error } = await supabase
-      .from('auth_requests')
-      .select('*')
-      .eq('code', payload)
-      .eq('status', 'pending')
-      .maybeSingle();
+    try {
+      // 1. So'rovni tekshiramiz
+      const { data: req, error } = await supabase
+        .from('auth_requests')
+        .select('*')
+        .eq('code', payload)
+        .eq('status', 'pending')
+        .maybeSingle();
 
-    if (error || !req) {
-      return ctx.reply("❌ Kod noto'g'ri yoki eskirgan.\n\nSaytdan yangi kod oling.");
+      if (error || !req) {
+        return ctx.reply("❌ Kod noto'g'ri yoki eskirgan.\n\nSaytdan yangi kod oling.");
+      }
+
+      // 2. Userni topamiz
+      const { data: user } = await supabase
+        .from('users')
+        .select('*')
+        .eq('phone', req.phone)
+        .maybeSingle();
+
+      if (!user) {
+        return ctx.reply("❌ Bu telefon raqam topilmadi. Iltimos, bot orqali ro'yxatdan o'ting.");
+      }
+
+      // 3. Yangi, o'ta xavfsiz token yaratamiz (32 bayt)
+      const newToken = crypto.randomBytes(32).toString('hex');
+
+      // 4. Userni yangilaymiz (Telegram ID va yangi Token)
+      await supabase.from('users').update({ 
+        auth_token: newToken,
+        telegram_id: ctx.from.id,
+        is_verified: true
+      }).eq('id', user.id);
+
+      // 5. Saytga tokenni yuboramiz (status: approved)
+      await supabase.from('auth_requests').update({ 
+        status: 'approved',
+        auth_token: newToken
+      }).eq('id', req.id);
+
+      return ctx.reply(
+        `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
+        { parse_mode: 'HTML' }
+      );
+
+    } catch (err) {
+      console.error(err);
+      return ctx.reply("⚠️ Server xatosi. Keyinroq urinib ko'ring.");
     }
+  } // ✅ IF (PAYLOAD) BLOKI SHU YERDA YOPILDI
 
-    // 2. Userni topamiz
-    const { data: user } = await supabase
-      .from('users')
-      .select('*')
-      .eq('phone', req.phone)
-      .maybeSingle();
-
-    if (!user) {
-      return ctx.reply("❌ Bu telefon raqam topilmadi. Iltimos, bot orqali ro'yxatdan o'ting.");
-    }
-
-    // 3. Yangi, o'ta xavfsiz token yaratamiz (32 bayt)
-    const newToken = crypto.randomBytes(32).toString('hex');
-
-    // 4. Userni yangilaymiz (Telegram ID va yangi Token)
-    await supabase.from('users').update({ 
-      auth_token: newToken,
-      telegram_id: ctx.from.id,
-      is_verified: true
-    }).eq('id', user.id);
-
-    // 5. Saytga tokenni yuboramiz (status: approved)
-    await supabase.from('auth_requests').update({ 
-      status: 'approved',
-      auth_token: newToken
-    }).eq('id', req.id);
-
+  // ═══ ODDIY /start (Kod yo'q bo'lsa) ═══
+  const user = await getUser(ctx.from.id);
+  if (user && user.phone) {
     return ctx.reply(
-      `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
-      { parse_mode: 'HTML' }
+      `Assalomu alaykum, ${user.name}! 👋\nRolingiz: ${getRoleName(user.role)}`, 
+      getMainMenu(ctx.from.id, user.role)
     );
-
-  } catch (err) {
-    console.error(err);
-    return ctx.reply("⚠️ Server xatosi. Keyinroq urinib ko'ring.");
   }
-}
+  
+  ctx.reply(
+    `Assalomu alaykum! Tizimga kirish uchun telefon raqamingizni yuboring:`, 
+    Markup.keyboard([[Markup.button.contactRequest('📱 Telefon raqamni yuborish')]]).resize()
+  );
+}); // ✅ BOT.START BLOKI SHU YERDA YOPILDI
+
 // ==========================================
 // 2. Telefon raqam
 // ==========================================
