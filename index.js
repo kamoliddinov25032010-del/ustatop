@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const ADMIN_ID = process.env.ADMIN_ID || 7695822564; // .env dan olinadi
-const WEBSITE_URL = 'https://ustatop-uz-2026.surge.sh'; // Sayt manzili
+const WEBSITE_URL = 'https://ustatop-live.surge.sh'; // Yangi havola
 
 const userStates = {};
 
