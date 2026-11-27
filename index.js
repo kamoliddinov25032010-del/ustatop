@@ -44,63 +44,89 @@ const getRoleName = (role) => {
 // 1. /start (Saytdan kelgan kodni tekshirish bilan)
 // ==========================================
 bot.start(async (ctx) => {
-  const code = ctx.startPayload;
-  if (!code) return ctx.reply("Iltimos, sayt orqali kod oling.");
+  const payload = ctx.startPayload; // Saytdan kelgan maxsus kod
 
-  // 1. Bazadan kodni qidiramiz
-  const { data: req, error } = await supabase
-    .from('auth_requests')
-    .select('*')
-    .eq('code', code)
-    .maybeSingle();
+  // ═══ ALOHIDA: Agar saytdan kod kelgan bo'lsa ═══
+  if (payload) {
+    try {
+      // 1. Bazadan kodni qidiramiz
+      const { data: req, error } = await supabase
+        .from('auth_requests')
+        .select('*')
+        .eq('code', payload)
+        .maybeSingle();
 
-  if (error || !req) {
-    return ctx.reply("❌ Kod topilmadi. Xato: " + (error?.message || 'Kod eskirgan'));
+      if (error || !req) {
+        return ctx.reply("❌ Kod topilmadi. Xato: " + (error?.message || 'Kod eskirgan'));
+      }
+
+      // 2. Yangi token yaratamiz
+      const token = crypto.randomBytes(16).toString('hex');
+
+      // 3. Userni topamiz (oxirgi 9 ta raqam orqali)
+      const last9 = req.phone.replace(/\D/g, '').slice(-9);
+      let { data: user } = await supabase.from('users').select('*').ilike('phone', `%${last9}%`).maybeSingle();
+
+      if (!user) {
+        // Yangi user yaratamiz
+        const { data: newUser, error: cErr } = await supabase.from('users').insert([{
+          telegram_id: ctx.from.id,
+          name: ctx.from.first_name,
+          phone: req.phone,
+          role: 'customer',
+          auth_token: token
+        }]).select().single();
+        
+        if (cErr) return ctx.reply("❌ User yaratishda xato: " + cErr.message);
+        user = newUser;
+      } else {
+        // Mavjud userni yangilaymiz
+        const { error: uErr } = await supabase.from('users').update({ 
+          auth_token: token, 
+          telegram_id: ctx.from.id 
+        }).eq('id', user.id);
+        
+        if (uErr) return ctx.reply("❌ Userni yangilashda xato: " + uErr.message);
+      }
+
+      // 4. Bazaga "approved" deb yozamiz
+      const { error: reqErr } = await supabase.from('auth_requests').update({ 
+        status: 'approved', 
+        auth_token: token 
+      }).eq('id', req.id);
+
+      if (reqErr) {
+        return ctx.reply("❌ Statusni yangilashda xato: " + reqErr.message);
+      }
+
+      // ✅ TUZATILDI: Saytga muvaffaqiyatli kirgach, menyuni ham chiqaramiz
+      return ctx.reply(
+        `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
+        { parse_mode: 'HTML', ...getMainMenu(ctx.from.id, user.role) }
+      );
+
+    } catch (err) {
+      console.error(err);
+      return ctx.reply("⚠️ Server xatosi. Keyinroq urinib ko'ring.");
+    }
   }
 
-  // 2. Yangi token yaratamiz
-  const crypto = require('crypto');
-  const token = crypto.randomBytes(16).toString('hex');
-
-  // 3. Userni topamiz (oxirgi 9 ta raqam orqali)
-  const last9 = req.phone.replace(/\D/g, '').slice(-9);
-  let { data: user } = await supabase.from('users').select('*').ilike('phone', `%${last9}%`).maybeSingle();
-
-  if (!user) {
-    // Yangi user yaratamiz
-    const { data: newUser, error: cErr } = await supabase.from('users').insert([{
-      telegram_id: ctx.from.id,
-      name: ctx.from.first_name,
-      phone: req.phone,
-      role: 'customer',
-      auth_token: token
-    }]).select().single();
-    
-    if (cErr) return ctx.reply("❌ User yaratishda xato: " + cErr.message);
-    user = newUser;
-  } else {
-    // Mavjud userni yangilaymiz
-    const { error: uErr } = await supabase.from('users').update({ 
-      auth_token: token, 
-      telegram_id: ctx.from.id 
-    }).eq('id', user.id);
-    
-    if (uErr) return ctx.reply("❌ Userni yangilashda xato: " + uErr.message);
+  // ═══ ODDIY /start (Agar saytdan kod kelmagan bo'lsa) ═══
+  const user = await getUser(ctx.from.id);
+  if (user && user.phone) {
+    // Agar user bazada bo'lsa, menyuni chiqaramiz
+    return ctx.reply(
+      `Assalomu alaykum, ${user.name}! 👋\nRolingiz: ${getRoleName(user.role)}`, 
+      getMainMenu(ctx.from.id, user.role)
+    );
   }
-
-  // 4. ENG MUHIM QADAM: Bazaga "approved" deb yozamiz
-  const { error: reqErr } = await supabase.from('auth_requests').update({ 
-    status: 'approved', 
-    auth_token: token 
-  }).eq('id', req.id);
-
-  if (reqErr) {
-    return ctx.reply("❌ Statusni yangilashda xato: " + reqErr.message);
-  }
-
-  return ctx.reply("✅ Tasdiqlandi! Saytga qaytib kiring.");
+  
+  // Agar user umuman bo'lmasa, telefon raqam so'raymiz
+  ctx.reply(
+    `Assalomu alaykum! Tizimga kirish uchun telefon raqamingizni yuboring:`, 
+    Markup.keyboard([[Markup.button.contactRequest('📱 Telefon raqamni yuborish')]]).resize()
+  );
 });
-
 // ==========================================
 // 2. Telefon raqam
 // ==========================================
