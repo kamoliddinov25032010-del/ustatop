@@ -6,9 +6,9 @@ const crypto = require('crypto');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-const ADMIN_ID = 7695822564;
+const ADMIN_ID = process.env.ADMIN_ID || 7695822564; // .env dan olinadi
+const WEBSITE_URL = 'https://ustatop-uz-2026.surge.sh'; // Sayt manzili
 
-// Foydalanuvchilar holatini eslab qolish uchun (KYC jarayoni uchun)
 const userStates = {};
 
 // ==========================================
@@ -19,114 +19,97 @@ async function getUser(telegramId) {
   return data;
 }
 
-const getMainMenu = (telegramId, role) => {
-  const menu = [
-    ['👤 Profilim', '🔑 Mening Parolim'],
-    ['🔄 Rolni o\'zgartirish', '💎 Premium'],
-    ['📞 Yordam']
-  ];
-  
-  // Agar usta yoki do'kon bo'lsa, KYC tugmasini qo'shamiz
-  if (role === 'worker' || role === 'seller') {
-    menu.push(['🛡️ Pasport yuklash (KYC)']);
-  }
-  
-  if (telegramId === ADMIN_ID) menu.push(['🛠 Admin Panel']);
-  return Markup.keyboard(menu).resize();
-};
-
 const getRoleName = (role) => {
   const roles = { 'customer': 'Mijoz', 'worker': 'Usta', 'seller': 'Do\'kon', 'admin': 'Admin' };
   return roles[role] || role;
 };
 
+// ✅ YANGI: Zamonaviy Inline Menyu (Pastdagi tugmalar o'rniga xabar ichida chiqadi)
+const getInlineMenu = (role) => {
+  const menu = [
+    [
+      { text: '👤 Profilim', callback_data: 'menu_profile' },
+      { text: '💎 Premium', callback_data: 'menu_premium' }
+    ],
+    [
+      { text: '🔄 Rolni o\'zgartirish', callback_data: 'menu_change_role' },
+      { text: '🔑 Mening Parolim', callback_data: 'menu_pin' }
+    ],
+    [
+      { text: '📞 Yordam', callback_data: 'menu_support' }
+    ]
+  ];
+  
+  if (role === 'worker' || role === 'seller') {
+    menu.push([{ text: '🛡️ Pasport yuklash (KYC)', callback_data: 'menu_kyc' }]);
+  }
+  
+  if (role === 'admin') {
+    menu.push([{ text: '🛠 Admin Panel', callback_data: 'menu_admin' }]);
+  }
+
+  // ✅ ENG MUHIM TUGMA: Mini App (Saytni ochish)
+  menu.push([{ text: '🚀 Saytga kirish (Mini App)', web_app: { url: WEBSITE_URL } }]);
+
+  return Markup.inlineKeyboard(menu);
+};
+
+// ✅ XAVFSIZLIK: BAN TEKSHIRUVI (Har qanday xabardan oldin ishlaydi)
+bot.use(async (ctx, next) => {
+  if (ctx.from && ctx.from.id) {
+    const user = await getUser(ctx.from.id);
+    if (user && user.is_banned) {
+      return ctx.reply('🚫 Sizning akkauntingiz qoidabuzarlik uchun bloklangan. Yordam uchun @ustatoping ga yozing.');
+    }
+  }
+  return next();
+});
+
 // ==========================================
-// 1. /start (Saytdan kelgan kodni tekshirish bilan)
+// 1. /start (Saytdan kelgan kod bilan)
 // ==========================================
 bot.start(async (ctx) => {
-  const payload = ctx.startPayload; // Saytdan kelgan maxsus kod
+  const payload = ctx.startPayload;
 
-  // ═══ ALOHIDA: Agar saytdan kod kelgan bo'lsa ═══
   if (payload) {
     try {
-      // 1. Bazadan kodni qidiramiz
-      const { data: req, error } = await supabase
-        .from('auth_requests')
-        .select('*')
-        .eq('code', payload)
-        .maybeSingle();
+      const { data: req, error } = await supabase.from('auth_requests').select('*').eq('code', payload).maybeSingle();
+      if (error || !req) return ctx.reply("❌ Kod topilmadi yoki eskirgan.");
 
-      if (error || !req) {
-        return ctx.reply("❌ Kod topilmadi. Xato: " + (error?.message || 'Kod eskirgan'));
-      }
-
-      // 2. Yangi token yaratamiz
       const token = crypto.randomBytes(16).toString('hex');
-
-      // 3. Userni topamiz (oxirgi 9 ta raqam orqali)
       const last9 = req.phone.replace(/\D/g, '').slice(-9);
       let { data: user } = await supabase.from('users').select('*').ilike('phone', `%${last9}%`).maybeSingle();
 
       if (!user) {
-        // Yangi user yaratamiz
         const { data: newUser, error: cErr } = await supabase.from('users').insert([{
-          telegram_id: ctx.from.id,
-          name: ctx.from.first_name,
-          phone: req.phone,
-          role: 'customer',
-          auth_token: token
+          telegram_id: ctx.from.id, name: ctx.from.first_name, phone: req.phone, role: 'customer', auth_token: token
         }]).select().single();
-        
-        if (cErr) return ctx.reply("❌ User yaratishda xato: " + cErr.message);
+        if (cErr) return ctx.reply("❌ User yaratishda xato.");
         user = newUser;
       } else {
-        // Mavjud userni yangilaymiz
-        const { error: uErr } = await supabase.from('users').update({ 
-          auth_token: token, 
-          telegram_id: ctx.from.id 
-        }).eq('id', user.id);
-        
-        if (uErr) return ctx.reply("❌ Userni yangilashda xato: " + uErr.message);
+        await supabase.from('users').update({ auth_token: token, telegram_id: ctx.from.id }).eq('id', user.id);
       }
 
-      // 4. Bazaga "approved" deb yozamiz
-      const { error: reqErr } = await supabase.from('auth_requests').update({ 
-        status: 'approved', 
-        auth_token: token 
-      }).eq('id', req.id);
+      await supabase.from('auth_requests').update({ status: 'approved', auth_token: token }).eq('id', req.id);
 
-      if (reqErr) {
-        return ctx.reply("❌ Statusni yangilashda xato: " + reqErr.message);
-      }
-
-      // ✅ TUZATILDI: Saytga muvaffaqiyatli kirgach, menyuni ham chiqaramiz
       return ctx.reply(
-        `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga qaytib kirasiz. 🚀`,
-        { parse_mode: 'HTML', ...getMainMenu(ctx.from.id, user.role) }
+        `✅ <b>Muvaffaqiyatli tasdiqlandi!</b>\n\nSaytga o'tish uchun pastdagi <b>"🚀 Saytga kirish"</b> tugmasini bosing.`,
+        { parse_mode: 'HTML', ...getInlineMenu(user.role) }
       );
-
     } catch (err) {
-      console.error(err);
       return ctx.reply("⚠️ Server xatosi. Keyinroq urinib ko'ring.");
     }
   }
 
-  // ═══ ODDIY /start (Agar saytdan kod kelmagan bo'lsa) ═══
   const user = await getUser(ctx.from.id);
   if (user && user.phone) {
-    // Agar user bazada bo'lsa, menyuni chiqaramiz
-    return ctx.reply(
-      `Assalomu alaykum, ${user.name}! 👋\nRolingiz: ${getRoleName(user.role)}`, 
-      getMainMenu(ctx.from.id, user.role)
-    );
+    return ctx.reply(`Assalomu alaykum, <b>${user.name}</b>! 👋\nRolingiz: ${getRoleName(user.role)}`, { parse_mode: 'HTML', ...getInlineMenu(user.role) });
   }
   
-  // Agar user umuman bo'lmasa, telefon raqam so'raymiz
-  ctx.reply(
-    `Assalomu alaykum! Tizimga kirish uchun telefon raqamingizni yuboring:`, 
-    Markup.keyboard([[Markup.button.contactRequest('📱 Telefon raqamni yuborish')]]).resize()
-  );
+  ctx.reply(`Assalomu alaykum! Tizimga kirish uchun telefon raqamingizni yuboring:`, 
+    Markup.keyboard([[Markup.button.contactRequest('📱 Telefon raqamni yuborish')]]).resize());
 });
+
 // ==========================================
 // 2. Telefon raqam
 // ==========================================
@@ -140,244 +123,152 @@ bot.on('contact', async (ctx) => {
     const initialPin = Math.floor(100000 + Math.random() * 900000).toString();
     const initialToken = crypto.randomBytes(16).toString('hex');
     
-    await supabase.from('users').insert([{ 
-      telegram_id: telegramId, 
-      name, 
-      phone, 
-      role: 'customer', 
-      auth_pin: initialPin, 
-      auth_token: initialToken
-    }]);
+    await supabase.from('users').insert([{ telegram_id: telegramId, name, phone, role: 'customer', auth_pin: initialPin, auth_token: initialToken }]);
     
-    ctx.reply(
-      `Rahmat! Tizimga muvaffaqiyatli qo'shildingiz. 🙋‍♂️\n\n` +
-      `🔐 <b>Sizning doimiy kirish parolingiz:</b> <code>${initialPin}</code>\n\n` +
-      `Bu parolni hech kimga bermang. Xohlasangiz, keyinchalik bot menyusidagi "⚙️ Parolni o'zgartirish" orqali almashtirishingiz mumkin.`,
-      { parse_mode: 'HTML' }
-    );
-
-    ctx.reply(`Yo'nalishni (rolni) tanlang:`, Markup.inlineKeyboard([
-      [Markup.button.callback('🙋 Mijoz', 'select_role_customer')],
-      [Markup.button.callback('👷 Usta', 'select_role_worker')],
-      [Markup.button.callback('🏪 Do\'kon', 'select_role_seller')]
+    ctx.reply(`Rahmat! Tizimga qo'shildingiz. 🙋‍♂️\n\n🔐 <b>Parolingiz:</b> <code>${initialPin}</code>`, { parse_mode: 'HTML' });
+    ctx.reply(`Yo'nalishni tanlang:`, Markup.inlineKeyboard([
+      [{ text: '🙋 Mijoz', callback_data: 'select_role_customer' }],
+      [{ text: '👷 Usta', callback_data: 'select_role_worker' }],
+      [{ text: '🏪 Do\'kon', callback_data: 'select_role_seller' }]
     ]));
-
   } else {
     await supabase.from('users').update({ phone }).eq('telegram_id', telegramId);
-    ctx.reply(`Rahmat! Telefon raqamingiz yangilandi.`, getMainMenu(ctx.from.id, user.role));
+    ctx.reply(`Telefon yangilandi.`, getInlineMenu(user.role));
   }
 });
 
 // ==========================================
-// 3. ROLNI TANLASH
+// 3. INLINE MENYU ISHLOVLARI (Callbacks)
+// ==========================================
+bot.action('menu_profile', async (ctx) => {
+  const user = await getUser(ctx.from.id);
+  if (!user) return ctx.answerCbQuery('Xatolik');
+  let statusText = user.role === 'customer' ? '✅ Mijoz' : (user.verification_status === 'approved' ? '✅ Tasdiqlangan' : '⏳ Kutilmoqda');
+  ctx.reply(`<b>👤 Profilingiz:</b>\n\nIsm: ${user.name}\nRol: <b>${getRoleName(user.role)}</b>\nHolat: ${statusText}\nBalans: ${(user.wallet_balance || 0).toLocaleString()} so'm\nPremium: ${user.premium_until && new Date(user.premium_until) > new Date() ? user.premium_tier.toUpperCase() : "Yo'q"}`, { parse_mode: 'HTML' });
+  ctx.answerCbQuery();
+});
+
+bot.action('menu_pin', async (ctx) => {
+  const user = await getUser(ctx.from.id);
+  ctx.reply(`🔐 <b>Sizning doimiy kirish parolingiz:</b> <code>${user.auth_pin}</code>\n\n<i>Uni hech kimga bermang!</i>`, { parse_mode: 'HTML' });
+  ctx.answerCbQuery();
+});
+
+bot.action('menu_support', async (ctx) => {
+  ctx.reply(`📞 +998 88 982 22 27\n✈️ @ustatoping`, { parse_mode: 'HTML' });
+  ctx.answerCbQuery();
+});
+
+bot.action('menu_kyc', async (ctx) => {
+  ctx.reply(`KYC (Pasport yuklash) uchun pastdagi tugmani bosing:`, Markup.keyboard([['🛡️ Pasport yuklash (KYC)']]).resize());
+  ctx.answerCbQuery();
+});
+
+bot.action('menu_admin', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery('Ruxsat yo\'q', { show_alert: true });
+  ctx.reply(`Admin panelga o'tish uchun saytga kiring.`);
+  ctx.answerCbQuery();
+});
+
+// ==========================================
+// 4. ROLNI TANLASH VA TASDIQLASH
 // ==========================================
 bot.action(/select_role_(.+)/, async (ctx) => {
   const role = ctx.match[1];
-  const telegramId = ctx.from.id;
+  let warningText = role === 'worker' ? "Usta bo'lish uchun Pasport va Selfie yuklab, KYC tasdiqlatish shart." : (role === 'seller' ? "Do'kon ochish uchun hujjatlar yuklab, KYC tasdiqlatish shart." : "Mijoz sifatida darhol kirib, xarid qilishingiz mumkin.");
   
-  const currentUser = await getUser(telegramId);
-  if (currentUser && currentUser.role === 'admin') {
-    return ctx.answerCbQuery('Siz Adminsiz, rolni o\'zgartira olmaysiz.', { show_alert: true });
-  }
-
-  let warningText = "";
-  if (role === 'worker') {
-    warningText = "👷 <b>Usta bo'lish:</b>\n\nUsta sifatida ishlash uchun <b>Pasport</b> va <b>Selfie</b> yuklab, KYC tasdiqlatish shart.";
-  } else if (role === 'seller') {
-    warningText = "🏪 <b>Do'kon ochish:</b>\n\nDo'kon sifatida ishlash uchun <b>Pasport</b>, <b>Selfie</b> va <b>Do'kon Guvohnomasi</b> yuklab, KYC tasdiqlatish shart.";
-  } else {
-    warningText = "🙋 <b>Mijoz bo'lish:</b>\n\nMijoz sifatida siz hujjatsiz darhol tizimga kirib, xarid qilishingiz mumkin.";
-  }
-
-  ctx.editMessageText(
-    `Siz <b>${getRoleName(role)}</b> rolini tanlamoqchisiz.\n\n${warningText}\n\n<b>Davom etamizmi?</b>`,
-    {
-      parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '✅ Ha, tasdiqlayman', callback_data: `confirm_role_${role}` }],
-          [{ text: '❌ Bekor qilish', callback_data: 'cancel_role' }]
-        ]
-      }
-    }
-  );
+  ctx.editMessageText(`Siz <b>${getRoleName(role)}</b> rolini tanlamoqchisiz.\n\n${warningText}\n\n<b>Davom etamizmi?</b>`, {
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: [[{ text: '✅ Ha', callback_data: `confirm_role_${role}` }], [{ text: '❌ Bekor qilish', callback_data: 'cancel_role' }]] }
+  });
 });
 
-// ==========================================
-// 4. ROLNI TASDIQLASH
-// ==========================================
 bot.action(/confirm_role_(.+)/, async (ctx) => {
   const newRole = ctx.match[1];
   const telegramId = ctx.from.id;
   const currentUser = await getUser(telegramId);
 
-  if (currentUser.role === newRole) {
-    return ctx.answerCbQuery('Siz allaqachon bu roldasiz.', { show_alert: true });
-  }
+  if (currentUser.role === newRole) return ctx.answerCbQuery('Siz allaqachon bu roldasiz.', { show_alert: true });
 
   if (newRole === 'customer') {
     await supabase.from('users').update({ role: 'customer', verification_status: 'approved' }).eq('telegram_id', telegramId);
     return ctx.editMessageText(`✅ Siz endi Mijoz rolidasiz.`, { parse_mode: 'HTML' })
-      .then(() => ctx.reply(`Asosiy menyu:`, getMainMenu(ctx.from.id, 'customer')));
+      .then(() => ctx.reply(`Asosiy menyu:`, getInlineMenu('customer')));
   }
 
   if (newRole === 'worker' || newRole === 'seller') {
     await supabase.from('users').update({ role: newRole, verification_status: 'pending', is_verified: false }).eq('telegram_id', telegramId);
-    
-    let text = `🛡️ <b>${newRole === 'worker' ? 'Usta' : "Do'kon"} bo'lish uchun KYC!</b>\n\n` +
-               `Pastdagi <b>"🛡️ Pasport yuklash (KYC)"</b> tugmasini bosing va hujjatlaringizni yuboring. Admin tekshirib tasdiqlagach, profilingiz saytda ko'rinadi.`;
-               
-    return ctx.editMessageText(text, { parse_mode: 'HTML' })
-      .then(() => ctx.reply(`Asosiy menyu:`, getMainMenu(ctx.from.id, newRole)));
+    return ctx.editMessageText(`🛡️ <b>KYC!</b>\n\nPastdagi menyudan "Pasport yuklash" tugmasini bosing va hujjatlaringizni yuboring.`, { parse_mode: 'HTML' })
+      .then(() => ctx.reply(`Asosiy menyu:`, getInlineMenu(newRole)));
   }
 });
 
-bot.action('cancel_role', async (ctx) => {
-  ctx.editMessageText(`❌ Bekor qilindi.`);
-});
+bot.action('cancel_role', (ctx) => ctx.editMessageText(`❌ Bekor qilindi.`));
 
 // ==========================================
 // 5. KYC JARAYONI (Pasport yuklash)
 // ==========================================
 bot.hears('🛡️ Pasport yuklash (KYC)', async (ctx) => {
   const user = await getUser(ctx.from.id);
-  if (!user || (user.role !== 'worker' && user.role !== 'seller')) {
-    return ctx.reply('Bu bo\'lim faqat Ustalar va Do\'konlar uchun.');
-  }
+  if (!user || (user.role !== 'worker' && user.role !== 'seller')) return ctx.reply('Faqat Ustalar va Do\'konlar uchun.');
+  if (user.verification_status === 'approved') return ctx.reply('✅ Hujjatlaringiz allaqachon tasdiqlangan.');
 
-  if (user.verification_status === 'approved') {
-    return ctx.reply('✅ Sizning hujjatlaringiz allaqachon tasdiqlangan! Hech narsa qilishingiz shart emas.');
-  }
-
-  userStates[ctx.from.id] = 'waiting_for_id'; // Holatni o'zgartirish
-  ctx.reply(`Iltimos, <b>Pasport yoki ID karta</b> rasmini yuboring (oldingi tomoni aniq ko'rinishi kerak).\n\nBekor qilish uchun /cancel deb yozing.`, { parse_mode: 'HTML' });
+  userStates[ctx.from.id] = 'waiting_for_id';
+  ctx.reply(`Iltimos, <b>Pasport yoki ID karta</b> rasmini yuboring.\n\nBekor qilish uchun /cancel deb yozing.`, { parse_mode: 'HTML' });
 });
 
 bot.command('cancel', (ctx) => {
   delete userStates[ctx.from.id];
-  ctx.reply('KYC jarayoni bekor qilindi.');
+  ctx.reply('Bekor qilindi.');
 });
 
-// RASM QABUL QILISH
 bot.on('photo', async (ctx) => {
-  const telegramId = ctx.from.id;
-  const state = userStates[telegramId];
+  const state = userStates[ctx.from.id];
+  if (!state) return;
 
-  if (!state) return; // Agar KYC jarayonida bo'lmasa, e'tiborsiz qoldiramiz
-
-  const user = await getUser(telegramId);
-  const photo = ctx.message.photo[ctx.message.photo.length - 1]; // Eng sifatli rasm
-  const fileId = photo.file_id;
-
+  const user = await getUser(ctx.from.id);
+  const photo = ctx.message.photo[ctx.message.photo.length - 1];
+  
   try {
-    const fileLink = await ctx.telegram.getFileLink(fileId);
+    const fileLink = await ctx.telegram.getFileLink(photo.file_id);
     const response = await fetch(fileLink.href);
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-
+    const buffer = Buffer.from(await response.arrayBuffer());
     const fileName = `${user.id}_${state}_${Date.now()}.jpg`;
 
-    // Supabase storage ga yuklash
     const { error: uploadError } = await supabase.storage.from('verifications').upload(fileName, buffer, { contentType: 'image/jpeg' });
     if (uploadError) throw uploadError;
 
     const { data: publicUrlData } = supabase.storage.from('verifications').getPublicUrl(fileName);
     const publicUrl = publicUrlData.publicUrl;
 
-    // Holatga qarab bazaga yozish
     if (state === 'waiting_for_id') {
       await supabase.from('users').update({ id_card_url: publicUrl }).eq('id', user.id);
-      userStates[telegramId] = 'waiting_for_selfie';
-      ctx.reply(`✅ Pasport qabul qilindi.\n\nEndi iltimos, <b>O'zingizni (Selfie)</b> pasport bilan qo'lingizda ushlab rasmga oling va yuboring.`, { parse_mode: 'HTML' });
+      userStates[ctx.from.id] = 'waiting_for_selfie';
+      ctx.reply(`✅ Pasport qabul qilindi.\n\nEndi <b>Selfie</b> (o'zingizni rasmga oling) yuboring.`, { parse_mode: 'HTML' });
     } 
     else if (state === 'waiting_for_selfie') {
       await supabase.from('users').update({ selfie_url: publicUrl }).eq('id', user.id);
-      
       if (user.role === 'seller') {
-        userStates[telegramId] = 'waiting_for_license';
-        ctx.reply(`✅ Selfie qabul qilindi.\n\nEndi iltimos, <b>Do'kon Guvohnomasi (Litsenziya)</b> rasmini yuboring.`, { parse_mode: 'HTML' });
+        userStates[ctx.from.id] = 'waiting_for_license';
+        ctx.reply(`✅ Selfie qabul qilindi.\n\nEndi <b>Do'kon Guvohnomasi (Litsenziya)</b> rasmini yuboring.`, { parse_mode: 'HTML' });
       } else {
-        // Usta uchun hammasi tugadi
-        delete userStates[telegramId];
+        delete userStates[ctx.from.id];
         await supabase.from('users').update({ verification_status: 'pending' }).eq('id', user.id);
-        ctx.reply(`✅ Barcha hujjatlar qabul qilindi! Admin tekshiruviga yuborildi. Tez orada tasdiqlanadi.`);
+        ctx.reply(`✅ Barcha hujjatlar qabul qilindi! Admin tekshiruviga yuborildi.`);
       }
     }
     else if (state === 'waiting_for_license') {
       await supabase.from('users').update({ shop_license_url: publicUrl, verification_status: 'pending' }).eq('id', user.id);
-      delete userStates[telegramId];
+      delete userStates[ctx.from.id];
       ctx.reply(`✅ Barcha hujjatlar qabul qilindi! Admin tekshiruviga yuborildi.`);
     }
-
   } catch (err) {
-    console.error(err);
-    ctx.reply('❌ Rasmni qabul qilishda xatolik yuz berdi. Iltimos qayta yuboring.');
+    ctx.reply('❌ Xatolik yuz berdi. Qayta yuboring.');
   }
 });
 
 // ==========================================
-// 6. Profil
-// ==========================================
-bot.hears('👤 Profilim', async (ctx) => {
-  const user = await getUser(ctx.from.id);
-  if (user) {
-    let statusText = '';
-    if (user.role === 'customer') statusText = '✅ Mijoz';
-    else if (user.verification_status === 'approved') statusText = '✅ Tasdiqlangan (KYC)';
-    else if (user.verification_status === 'pending') statusText = '⏳ KYC Kutilmoqda';
-    else statusText = '❌ Tasdiqlanmagan';
-
-    const text = `<b>👤 Profilingiz:</b>\n\nIsm: ${user.name}\nRol: <b>${getRoleName(user.role)}</b>\nHolat: ${statusText}\nBalans: ${(user.wallet_balance || 0).toLocaleString()} so'm\nPremium: ${user.premium_until && new Date(user.premium_until) > new Date() ? user.premium_tier.toUpperCase() : "Yo'q"}`;
-    ctx.reply(text, { parse_mode: 'HTML' });
-  }
-});
-
-// ==========================================
-// 7. Parolni o'zgartirish
-// ==========================================
-bot.hears('🔑 Mening Parolim', async (ctx) => {
-  const user = await getUser(ctx.from.id);
-  if (user && user.auth_pin) ctx.reply(`🔐 <b>Parolingiz:</b> <code>${user.auth_pin}</code>`, { parse_mode: 'HTML' });
-});
-
-bot.hears('⚙️ Parolni o\'zgartirish', async (ctx) => {
-  ctx.reply(`Yangi parolni yuboring:\n\n<code>/parol 123456</code>`, { parse_mode: 'HTML' });
-});
-
-bot.command('parol', async (ctx) => {
-  const newPin = ctx.message.text.split(' ')[1];
-  if (!newPin || newPin.length !== 6 || isNaN(newPin)) return ctx.reply('❌ Faqat 6 xonali raqam kiriting.');
-  const user = await getUser(ctx.from.id);
-  await supabase.from('users').update({ auth_pin: newPin }).eq('id', user.id);
-  ctx.reply(`✅ Parolingiz o'zgardi: <code>${newPin}</code>`, { parse_mode: 'HTML' });
-});
-
-// ==========================================
-// 8. Rolni o'zgartirish
-// ==========================================
-bot.hears('🔄 Rolni o\'zgartirish', async (ctx) => {
-  ctx.reply(`Qaysi rolga o'tmoqchisiz?`, Markup.inlineKeyboard([
-    [Markup.button.callback('🙋 Mijoz (Oson)', 'select_role_customer')],
-    [Markup.button.callback('👷 Usta (KYC shart)', 'select_role_worker')],
-    [Markup.button.callback('🏪 Do\'kon (KYC shart)', 'select_role_seller')]
-  ]));
-});
-
-// ==========================================
-// 9. Yordam va Admin Panel
-// ==========================================
-bot.hears('📞 Yordam', async (ctx) => {
-  ctx.reply(`📞 +998 88 982 22 27\n✈️ @ustatoping`, { parse_mode: 'HTML' });
-});
-
-bot.hears('🛠 Admin Panel', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return;
-  const user = await getUser(ctx.from.id);
-  ctx.reply(`Xush kelibsiz, Admin! Parolingiz: <code>${user ? user.auth_pin : 'Yo\'q'}</code>`, { parse_mode: 'HTML' });
-});
-
-// ==========================================
-// REALTIME LISTENER
+// REALTIME LISTENER (Bildirishnomalar)
 // ==========================================
 supabase.channel('custom-all-channel')
   .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, async (payload) => {
@@ -394,6 +285,6 @@ supabase.channel('custom-all-channel')
 // ==========================================
 // ISHGA TUSHIRISH
 // ==========================================
-bot.launch().then(() => console.log('🤖 Bot ishga tushdi!'));
+bot.launch().then(() => console.log('🤖 Bot xavfsiz va professional rejimda ishga tushdi!'));
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
